@@ -1,4 +1,6 @@
 # dev_prod
 
-## Preliminary   
-* `setup.md` 
+## Contents 
+| file / module | purpose | 
+| ------------- | ------- | 
+| `setup.md` | prelim steps | 
