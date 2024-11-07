@@ -6,6 +6,11 @@ import random
 from pathlib import Path
 
 class FSQueue:
+    '''
+    File-system bvased queue
+    - persistence via pickle files in specified directory 
+    - `.put()` `.get()` data from queue 
+    '''
     
     def __init__(self, root, fs_wait=0.1, fifo=True):
         """Creates a FSQueue that will store data as pickle files in root."""
@@ -62,3 +67,6 @@ if __name__ == '__main__':
     assert q.qsize() == 10
     for i in range(11):
         print(q.get())  # The last one should wait
+
+
+
