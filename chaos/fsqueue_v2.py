@@ -1,71 +1,111 @@
-### Version 2 ###
-# Author: Will  
-
 import os 
 import time 
 import pickle
-import random 
 from pathlib import Path 
 import uuid 
+import json 
+import logging 
 
-class fsqueue_v2: 
-
-    def __init__(self, root, fs_wait=0.1, fifo=True):
+class fsqueue_v2:
+    """
+    Updates: 
+    - json or pickle file serialization 
+    - improved with checks similarly employed in `FSQueueJson`   
+    """
+    def __init__(self, root, fs_wait=0.1, fifo=True, use_json=False):
+        """
+        Initializes the FSQueue with an option to use either pickle or JSON for serialization.
+        """
         self._root = Path(root)
         self._root.mkdir(exist_ok=True, parents=True)
         self._wait = fs_wait
         self._fifo = fifo
+        self.use_json = use_json
 
-    
-    def get(self): 
+    def get(self, wait_if_empty=True):
         """
-        changed from `os.walk()` to list all files, which is time consuming if there are multiple files in the directory containing many files 
-        - `os.scandir()` is yields the directory entries one at a time (reads one by one instead of listing) and contains file metadata without the need to filly traverse the directory
+        Retrieves data from the queue. Uses JSON or Pickle to deserialize depending on the flag set during initialization.
         """
-
-        while True: 
-            with os.scandir(self._root) as entries: 
+        while True:
+            with os.scandir(self._root) as entries:
                 files = [entry for entry in entries if entry.is_file() and not entry.name.endswith('.lock')]
-            
-            files = sorted(files, key = lambda e: e.name, reverse = not self._fifo)
 
-            for entry in files: 
+            files = sorted(files, key=lambda e: e.name, reverse=not self._fifo)
+
+            for entry in files:
                 fn = Path(entry.path)
                 lock_path = fn.with_suffix('.lock')
 
-                try: 
-                    fn.rename(lock_path) # Lock the file by renaming 
-                    with lock_path.open('rb') as f_obj: 
-                        data = pickle.load(f_obj)
-                    lock_path.unlink() # Remove the file after reading 
-                    return data 
-                
-                except FileNotFoundError: 
-                    pass # File was locked by another get() 
+                try:
+                    # Check if the file is already locked
+                    if lock_path.exists():
+                        continue
 
-            time.sleep(self._wait)
+                    # Attempt to rename to lock it
+                    try:
+                        fn.rename(lock_path)
+                    except FileNotFoundError:
+                        # If the file is already locked or removed, continue
+                        logging.warning(f"File {fn} was not found or already locked by another process.")
+                        continue
 
-    def put(self, data) :
+                    # Read the file content
+                    with lock_path.open('r' if self.use_json else 'rb') as f_obj:
+                        if self.use_json:
+                            data = json.load(f_obj)
+                        else:
+                            data = pickle.load(f_obj)
+
+                    # Attempt to delete the file after reading
+                    try:
+                        lock_path.unlink()
+                    except Exception as e:
+                        logging.error(f"Failed to delete the file {lock_path}: {e}")
+
+                    return data
+
+                except Exception as e:
+                    logging.error(f"Unexpected error occurred while processing file {fn}: {e}")
+
+            # If the queue is empty, determine whether to wait or return None
+            if wait_if_empty:
+                time.sleep(self._wait)
+            else:
+                return None
+
+    def put(self, data):
         """
-        changed time based calculations or random numbers because can still have potential issue with race conditions 
-        - `uuid4()` ensures each filename is unique, highly unlikely to collide 
+        Adds data to the queue. Uses JSON or Pickle to serialize depending on the flag set during initialization.
         """
-
         seq = str(uuid.uuid4())
-        target = self._root / seq 
+        target = self._root / seq
         fn = target.with_suffix('.lock')
 
-        pickle.dump(data, fn.open('wb')) # Write the locked file 
-        fn.rename(target) # Atomically unlock  
+        try:
+            with fn.open('w' if self.use_json else 'wb') as f:
+                if self.use_json:
+                    json.dump(data, f)
+                else:
+                    pickle.dump(data, f)
+
+            # Rename to unlock the file atomically
+            fn.rename(target)
+
+        except Exception as e:
+            logging.error(f"Failed to write data to file {fn}: {e}")
+            raise
 
     def qsize(self):
-        _, _, files = next(os.walk(self._root))
-        n = 0
-        for f in files:
-            if f.endswith('lock'):
-                continue  # Someone is reading the file
-            n += 1
-        return n
+        """
+        Returns the approximate size of the queue.
+        """
+        try:
+            with os.scandir(self._root) as entries:
+                files = [entry for entry in entries if entry.is_file() and not entry.name.endswith('.lock')]
+            return len(files)
+        except Exception as e:
+            logging.error(f"Failed to calculate queue size: {e}")
+            return 0
 
 if __name__ == '__main__':
     q = fsqueue_v2('/tmp/test_queue')
@@ -74,4 +114,3 @@ if __name__ == '__main__':
     assert q.qsize() == 10
     for i in range(11):
         print(q.get())  # The last one should wait
-
